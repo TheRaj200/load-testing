@@ -53,7 +53,7 @@ func testApp(t *testing.T) (*fixture, func()) {
 	if _, e = pool.Exec(context.Background(), string(schema)); e != nil {
 		t.Fatal(e)
 	}
-	a := &fixture{server: api.New(store.New(pool), cache.NewProducts(1000, time.Second)), db: pool}
+	a := &fixture{server: api.New(store.New(pool), cache.NewProducts(1000, time.Second), cache.NewLists(100, time.Second)), db: pool}
 	return a, func() {
 		pool.Close()
 		_, _ = admin.Exec(context.Background(), "DROP SCHEMA "+name+" CASCADE")
@@ -131,12 +131,32 @@ func TestContract(t *testing.T) {
 		t.Fatal(e)
 	}
 	defer newPool.Close()
-	b := &fixture{server: api.New(store.New(newPool), cache.NewProducts(1000, time.Second)), db: newPool}
+	b := &fixture{server: api.New(store.New(newPool), cache.NewProducts(1000, time.Second), cache.NewLists(100, time.Second)), db: newPool}
 	v = require(t, b, "GET", "/products/p", "", 200, "")
 	if v["stock"] != float64(1) {
 		t.Fatal(v)
 	}
 }
+func TestCategoryCreationInvalidatesCache(t *testing.T) {
+	a, done := testApp(t)
+	defer done()
+	v := require(t, a, "GET", "/products?category=new", "", 200, "")
+	if v["total"] != float64(0) {
+		t.Fatal(v)
+	}
+	require(t, a, "POST", "/products", `{"id":"p1","name":"First","category":"new","price":5,"stock":1}`, 201, "")
+	v = require(t, a, "GET", "/products?category=new", "", 200, "")
+	if v["total"] != float64(1) {
+		t.Fatal(v)
+	}
+	require(t, a, "POST", "/products", `{"id":"p2","name":"Second","category":"new","price":3,"stock":1}`, 201, "")
+	v = require(t, a, "GET", "/products?category=new", "", 200, "")
+	items := v["items"].([]any)
+	if v["total"] != float64(2) || len(items) != 2 || items[0].(map[string]any)["id"] != "p2" {
+		t.Fatal(v)
+	}
+}
+
 func TestConcurrentSales(t *testing.T) {
 	a, done := testApp(t)
 	defer done()

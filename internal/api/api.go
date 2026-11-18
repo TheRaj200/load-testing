@@ -17,9 +17,12 @@ import (
 type Server struct {
 	store *store.Store
 	cache *cache.Products
+	lists *cache.Lists
 }
 
-func New(s *store.Store, c *cache.Products) *Server { return &Server{store: s, cache: c} }
+func New(s *store.Store, c *cache.Products, lists *cache.Lists) *Server {
+	return &Server{store: s, cache: c, lists: lists}
+}
 
 func respond(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json")
@@ -85,6 +88,7 @@ func (a *Server) createProduct(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.cache.Invalidate(id)
+	a.lists.InvalidateCategory(category)
 	respond(w, 201, p)
 }
 
@@ -135,7 +139,7 @@ func (a *Server) listProducts(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	out, err := a.store.ListProducts(r.Context(), categories[0], page, limit)
+	out, err := a.lists.Get(r.Context(), categories[0], page, limit, a.store.ListProducts)
 	if err != nil {
 		apiError(w, 500, "INTERNAL_ERROR")
 		return

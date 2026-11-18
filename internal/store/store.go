@@ -96,28 +96,34 @@ func orderID() (string, error) {
 
 func (s *Store) CreateOrder(ctx context.Context, userID, productID string) (model.Order, error) {
 	order := model.Order{UserID: userID, ProductID: productID}
-	tx, err := s.db.BeginTx(ctx, pgx.TxOptions{})
-	if err != nil {
-		return order, err
-	}
-	defer tx.Rollback(context.Background())
+	// Stock only decreases and products are never deleted. A committed zero is
+	// therefore a safe rejection from the authoritative database, without a
+	// transaction or a row lock on a heavily contested flash product.
 	var stock int64
-	err = tx.QueryRow(ctx, `SELECT stock FROM products WHERE id=$1 FOR UPDATE`, productID).Scan(&stock)
+	err := s.db.QueryRow(ctx, `SELECT stock FROM products WHERE id=$1`, productID).Scan(&stock)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return order, ErrProductNotFound
 	}
 	if err != nil {
 		return order, err
 	}
-	var exists bool
-	if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM orders WHERE user_id=$1 AND product_id=$2)`, userID, productID).Scan(&exists); err != nil {
-		return order, err
-	}
-	if exists {
-		return order, ErrAlreadyPurchased
-	}
 	if stock == 0 {
 		return order, ErrSoldOut
+	}
+
+	tx, err := s.db.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return order, err
+	}
+	defer tx.Rollback(context.Background())
+	// Conditional UPDATE serializes the last-unit race. An INSERT failure
+	// rolls this decrement back with the transaction.
+	err = tx.QueryRow(ctx, `UPDATE products SET stock=stock-1 WHERE id=$1 AND stock>0 RETURNING stock`, productID).Scan(&stock)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return order, ErrSoldOut
+	}
+	if err != nil {
+		return order, err
 	}
 	order.OrderID, err = orderID()
 	if err != nil {
@@ -129,10 +135,6 @@ func (s *Store) CreateOrder(ctx context.Context, userID, productID string) (mode
 		if errors.As(err, &pe) && pe.Code == "23505" && pe.ConstraintName == "orders_user_id_product_id_key" {
 			return order, ErrAlreadyPurchased
 		}
-		return order, err
-	}
-	_, err = tx.Exec(ctx, `UPDATE products SET stock=stock-1 WHERE id=$1 AND stock>0`, productID)
-	if err != nil {
 		return order, err
 	}
 	// Use a fresh context so a disconnected client cannot cancel a commit halfway.

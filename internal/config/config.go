@@ -15,6 +15,8 @@ type Config struct {
 	DBConnectTimeout  time.Duration
 	CacheMax          int
 	CacheTTL          time.Duration
+	ListCacheMax      int
+	ListCacheTTL      time.Duration
 	ReadHeaderTimeout time.Duration
 	IdleTimeout       time.Duration
 }
@@ -45,6 +47,10 @@ func Load() Config {
 	if ttl > 2*time.Second {
 		ttl = 2 * time.Second
 	}
+	listTTL := duration("LIST_CACHE_TTL", "1s")
+	if listTTL > 2*time.Second {
+		listTTL = 2 * time.Second
+	}
 	maxConns := positiveInt("DB_MAX_CONNS", 16)
 	minConns := positiveInt("DB_MIN_CONNS", 2)
 	if minConns > maxConns {
@@ -57,6 +63,7 @@ func Load() Config {
 		DBMaxConns:  int32(maxConns), DBMinConns: int32(minConns),
 		DBConnectTimeout: duration("DB_CONNECT_TIMEOUT", "5s"),
 		CacheMax:         positiveInt("PRODUCT_CACHE_MAX", 20000), CacheTTL: ttl,
+		ListCacheMax: positiveInt("LIST_CACHE_MAX", 1024), ListCacheTTL: listTTL,
 		ReadHeaderTimeout: duration("HTTP_READ_HEADER_TIMEOUT", "2s"),
 		IdleTimeout:       duration("HTTP_IDLE_TIMEOUT", "60s"),
 	}

@@ -38,7 +38,7 @@ func main() {
 	if _, err = db.Exec(context.Background(), string(schema)); err != nil {
 		log.Fatal("schema initialization: ", err)
 	}
-	handler := api.New(store.New(db), cache.NewProducts(settings.CacheMax, settings.CacheTTL))
+	handler := api.New(store.New(db), cache.NewProducts(settings.CacheMax, settings.CacheTTL), cache.NewLists(settings.ListCacheMax, settings.ListCacheTTL))
 	server := &http.Server{Addr: settings.Address, Handler: handler, ReadHeaderTimeout: settings.ReadHeaderTimeout, IdleTimeout: settings.IdleTimeout}
 	log.Printf("listening on %s", server.Addr)
 	if err = server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {

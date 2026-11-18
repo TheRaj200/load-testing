@@ -1,6 +1,6 @@
 # Last Server Standing backend
 
-Go 1.23+ and local PostgreSQL. All data is in PostgreSQL; the in-process product-detail cache holds at most 20,000 entries for at most one second. Defaults are conservative starting points for the 2 vCPU / 8 GiB box, not a measured throughput claim.
+Go 1.23+ and local PostgreSQL. All data is in PostgreSQL; the in-process product-detail cache holds at most 20,000 entries and category-page cache at most 1,024 entries, each for at most one second. Defaults are conservative starting points for the 2 vCPU / 8 GiB box, not a measured throughput claim.
 
 ## Windows PowerShell, local
 
@@ -94,4 +94,4 @@ curl -s -w '\n' localhost:8080/products/pclick1
 
 The two parallel checks should show `1 201` and respectively `49 409` and `19 409`. After the crash, systemd should restore `/health` and the product with stock 999. Also verify that the database is local, every route matches section 04, and no startup command needs the internet.
 
-An order locks its product row, checks stock and prior purchase, inserts a uniquely constrained order, and decrements stock in one transaction. A 201 is sent only after commit. If the commit result is uncertain, the connection closes without an explicit error response. Product-detail cache entries expire at a fixed deadline and are invalidated after successful writes; order decisions always read PostgreSQL.
+An order first reads authoritative PostgreSQL stock. A committed zero is safe to reject without a row lock because stock never increases. Otherwise a conditional stock decrement and uniquely constrained order insert share one transaction; any failed insert rolls back the decrement. A 201 is sent only after commit. If the commit result is uncertain, the connection closes without an explicit error response. Product-detail cache entries expire at a fixed deadline and are invalidated after successful writes. Category pages have a fixed one-second lifetime; product creation invalidates them before responding, including empty-category results. Order decisions never use a cache.
