@@ -1,0 +1,19 @@
+[Unit]
+Description=Last Server Standing API
+After=network.target postgresql.service
+Requires=postgresql.service
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/competition
+EnvironmentFile=/opt/competition/.env
+ExecStart=/opt/competition/bin/flashsale
+Restart=always
+RestartSec=2
+LimitNOFILE=65535
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
