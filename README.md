@@ -57,7 +57,7 @@ sudo systemctl enable --now competition
 
 Edit `/opt/competition/.env` with the local database URL before starting. The server applies idempotent schema DDL before accepting traffic; `/health` checks the database on each call. Do not use the sample password. PostgreSQL should keep its default `fsync=on` and `synchronous_commit=on`; verify with `sudo -u postgres psql -Atc 'SHOW fsync; SHOW synchronous_commit;'`. The service restarts after a crash without downloads or external calls. Restart it offline with `sudo systemctl restart competition`.
 
-For a staged same-host benchmark, use `go run ./loadtest --smoke` first. The full profile is `go run ./loadtest`; it seeds 10,000 products, warms for 60 seconds at 200 requests/s, then runs the stated 17 levels. This generator competes with the server for the same CPUs, so treat its latency as rough. It uses fresh IDs on every run and audits accepted stock after a three-second wait. It reports wrong answers separately from transport errors.
+For a staged same-host benchmark, use `go run ./loadtest --smoke` first, then `go run ./loadtest --max-rate 2000` to stop after the 2,000 requests/s level. The full profile is `go run ./loadtest`; it seeds 10,000 products, warms for 60 seconds at 200 requests/s, then runs the stated 17 levels. This generator competes with the server for the same CPUs, so treat its latency as rough. It uses fresh IDs on every run and audits accepted stock after a three-second wait. It reports wrong answers separately from transport errors and prints the first 20 wrong-answer details.
 
 ## Exact competition pre-flight commands
 

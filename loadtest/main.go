@@ -35,6 +35,7 @@ type result struct {
 	Duration time.Duration
 	Err      error
 }
+type purchase struct{ userID, productID string }
 type runner struct {
 	base      string
 	client    *http.Client
@@ -46,7 +47,29 @@ type runner struct {
 	accepted  map[string]map[string]bool
 	initial   map[string]int64
 	products  []product
+	byID      map[string]product
+	purchases []purchase
 	users     []string
+}
+
+func brief(body []byte) string {
+	if len(body) > 256 {
+		body = body[:256]
+	}
+	return string(body)
+}
+func (x *runner) wrongAnswer(format string, args ...any) {
+	n := x.wrong.Add(1)
+	if n <= 20 {
+		fmt.Printf("wrong_detail: "+format+"\n", args...)
+	}
+}
+func (x *runner) failed(r result) bool {
+	if r.Err != nil || r.Status >= 500 || r.Status == 429 {
+		x.transport.Add(1)
+		return true
+	}
+	return false
 }
 
 func (x *runner) request(ctx context.Context, method, path string, v any) result {
@@ -81,6 +104,7 @@ func (x *runner) create(p product) error {
 	x.mu.Lock()
 	x.initial[p.ID] = p.Stock
 	x.products = append(x.products, p)
+	x.byID[p.ID] = p
 	x.mu.Unlock()
 	return nil
 }
@@ -114,8 +138,7 @@ func (x *runner) seed(n int) error {
 func (x *runner) one(flash product, seed int64) {
 	rng := rand.New(rand.NewSource(seed))
 	x.mu.Lock()
-	products := append([]product(nil), x.products...)
-	users := append([]string(nil), x.users...)
+	products := x.products // Only appended between levels, after all workers finish.
 	x.mu.Unlock()
 	if len(products) == 0 {
 		return
@@ -135,20 +158,19 @@ func (x *runner) one(flash product, seed int64) {
 			id = fmt.Sprintf("%smissing%d", x.run, seed)
 		}
 		r := x.request(ctx, "GET", "/products/"+id, nil)
-		if r.Err != nil {
-			x.transport.Add(1)
+		if x.failed(r) {
 			return
 		}
 		if missing {
 			var e map[string]string
 			if r.Status != 404 || json.Unmarshal(r.Body, &e) != nil || e["error"] != "PRODUCT_NOT_FOUND" {
-				x.wrong.Add(1)
+				x.wrongAnswer("missing product id=%s status=%d body=%s", id, r.Status, brief(r.Body))
 			}
 			return
 		}
 		var got product
 		if r.Status != 200 || json.Unmarshal(r.Body, &got) != nil || got.ID != p.ID || got.Name != p.Name || got.Category != p.Category || got.Price != p.Price || got.Stock < 0 || got.Stock > p.Stock {
-			x.wrong.Add(1)
+			x.wrongAnswer("product id=%s status=%d body=%s", id, r.Status, brief(r.Body))
 		}
 	case z < 75:
 		p := products[rng.Intn(len(products))]
@@ -157,8 +179,7 @@ func (x *runner) one(flash product, seed int64) {
 			page = 1 + rng.Intn(10)
 		}
 		r := x.request(ctx, "GET", fmt.Sprintf("/products?category=%s&page=%d&limit=%d", p.Category, page, limit), nil)
-		if r.Err != nil {
-			x.transport.Add(1)
+		if x.failed(r) {
 			return
 		}
 		var got struct {
@@ -168,12 +189,12 @@ func (x *runner) one(flash product, seed int64) {
 			Total int       `json:"total"`
 		}
 		if r.Status != 200 || json.Unmarshal(r.Body, &got) != nil || got.Items == nil || got.Page != page || got.Limit != limit || got.Total < 1 {
-			x.wrong.Add(1)
+			x.wrongAnswer("list category=%s page=%d limit=%d status=%d body=%s", p.Category, page, limit, r.Status, brief(r.Body))
 			return
 		}
 		for i, item := range got.Items {
 			if item.Category != p.Category || item.Stock < 0 || item.Stock > 100000 || (i > 0 && (got.Items[i-1].Price > item.Price || (got.Items[i-1].Price == item.Price && got.Items[i-1].ID >= item.ID))) {
-				x.wrong.Add(1)
+				x.wrongAnswer("list item category=%s page=%d item=%d body=%s", p.Category, page, i, brief(r.Body))
 				return
 			}
 		}
@@ -183,8 +204,14 @@ func (x *runner) one(flash product, seed int64) {
 			p = flash
 		}
 		user := fmt.Sprintf("%su%d", x.run, x.seq.Add(1))
-		if len(users) > 0 && rng.Intn(100) < 3 {
-			user = users[rng.Intn(len(users))]
+		if rng.Intn(100) < 3 {
+			x.mu.Lock()
+			if len(x.purchases) > 0 {
+				previous := x.purchases[rng.Intn(len(x.purchases))]
+				user = previous.userID
+				p = x.byID[previous.productID]
+			}
+			x.mu.Unlock()
 		}
 		payload := map[string]string{"userId": user, "productId": p.ID}
 		responses := []result{}
@@ -197,16 +224,17 @@ func (x *runner) one(flash product, seed int64) {
 			responses = append(responses, x.request(ctx, "POST", "/orders", payload))
 		}
 		for _, r := range responses {
-			x.checkOrder(r, p, user, flash.ID)
+			x.checkOrder(r, p, user)
 		}
 	case z < 100:
 		user := fmt.Sprintf("%sunknown%d", x.run, seed)
-		if len(users) > 0 && rng.Intn(10) < 8 {
-			user = users[rng.Intn(len(users))]
+		x.mu.Lock()
+		if len(x.users) > 0 && rng.Intn(10) < 8 {
+			user = x.users[rng.Intn(len(x.users))]
 		}
+		x.mu.Unlock()
 		r := x.request(ctx, "GET", "/users/"+user+"/orders", nil)
-		if r.Err != nil {
-			x.transport.Add(1)
+		if x.failed(r) {
 			return
 		}
 		var got struct {
@@ -214,19 +242,18 @@ func (x *runner) one(flash product, seed int64) {
 			Orders []order `json:"orders"`
 		}
 		if r.Status != 200 || json.Unmarshal(r.Body, &got) != nil || got.UserID != user || got.Orders == nil {
-			x.wrong.Add(1)
+			x.wrongAnswer("user orders user=%s status=%d body=%s", user, r.Status, brief(r.Body))
 		}
 	}
 }
-func (x *runner) checkOrder(r result, p product, user, flashID string) {
-	if r.Err != nil || r.Status >= 500 || r.Status == 429 {
-		x.transport.Add(1)
+func (x *runner) checkOrder(r result, p product, user string) {
+	if x.failed(r) {
 		return
 	}
 	if r.Status == 201 {
 		var o order
 		if json.Unmarshal(r.Body, &o) != nil || o.OrderID == "" || o.UserID != user || o.ProductID != p.ID {
-			x.wrong.Add(1)
+			x.wrongAnswer("order product=%s user=%s status=%d body=%s", p.ID, user, r.Status, brief(r.Body))
 			return
 		}
 		x.mu.Lock()
@@ -234,18 +261,19 @@ func (x *runner) checkOrder(r result, p product, user, flashID string) {
 			x.accepted[p.ID] = map[string]bool{}
 		}
 		if x.accepted[p.ID][user] {
-			x.wrong.Add(1)
+			x.wrongAnswer("duplicate success product=%s user=%s", p.ID, user)
 		}
 		x.accepted[p.ID][user] = true
+		x.purchases = append(x.purchases, purchase{user, p.ID})
 		x.users = append(x.users, user)
 		x.mu.Unlock()
 	} else if r.Status == 409 {
 		var e map[string]string
-		if json.Unmarshal(r.Body, &e) != nil || (e["error"] != "SOLD_OUT" && e["error"] != "ALREADY_PURCHASED") || p.ID != flashID && e["error"] == "SOLD_OUT" {
-			x.wrong.Add(1)
+		if json.Unmarshal(r.Body, &e) != nil || (e["error"] != "SOLD_OUT" && e["error"] != "ALREADY_PURCHASED") || p.Name != "Flash" && e["error"] == "SOLD_OUT" {
+			x.wrongAnswer("order conflict product=%s user=%s kind=%s body=%s", p.ID, user, p.Name, brief(r.Body))
 		}
 	} else {
-		x.wrong.Add(1)
+		x.wrongAnswer("order status product=%s user=%s status=%d body=%s", p.ID, user, r.Status, brief(r.Body))
 	}
 }
 func (x *runner) level(rate int, d time.Duration, flash product) {
@@ -313,9 +341,10 @@ func (x *runner) audit() error {
 func main() {
 	base := flag.String("base", "http://127.0.0.1:8080", "target URL")
 	smoke := flag.Bool("smoke", false, "small local run")
+	maxRate := flag.Int("max-rate", 50000, "highest full-profile rate to run")
 	flag.Parse()
 	run := fmt.Sprintf("r%d", time.Now().UnixNano())
-	x := &runner{base: *base, run: run, client: &http.Client{Timeout: 2 * time.Second, Transport: &http.Transport{MaxIdleConns: 5000, MaxIdleConnsPerHost: 5000, IdleConnTimeout: 60 * time.Second}}, accepted: map[string]map[string]bool{}, initial: map[string]int64{}}
+	x := &runner{base: *base, run: run, client: &http.Client{Timeout: 2 * time.Second, Transport: &http.Transport{MaxIdleConns: 5000, MaxIdleConnsPerHost: 5000, IdleConnTimeout: 60 * time.Second}}, accepted: map[string]map[string]bool{}, initial: map[string]int64{}, byID: map[string]product{}}
 	seed := 10000
 	if *smoke {
 		seed = 100
@@ -329,6 +358,9 @@ func main() {
 	} else {
 		x.level(200, 60*time.Second, product{})
 		for i, rate := range []int{500, 1000, 1500, 2000, 3000, 4000, 5000, 6500, 8000, 10000, 12500, 15000, 20000, 25000, 30000, 40000, 50000} {
+			if rate > *maxRate {
+				break
+			}
 			p := product{fmt.Sprintf("%sflash%d", run, i), "Flash", fmt.Sprintf("%sf%d", run, i), 2999, int64(50 + i%151)}
 			if e := x.create(p); e != nil {
 				fmt.Fprintln(os.Stderr, e)
