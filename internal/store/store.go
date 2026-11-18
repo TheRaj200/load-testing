@@ -2,11 +2,13 @@ package store
 
 import (
 	"context"
-	"crypto/rand"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"math"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -89,11 +91,14 @@ func (s *Store) ListProducts(ctx context.Context, category string, page, limit i
 	return out, tx.Commit(ctx)
 }
 
+var orderSeq atomic.Uint64
+
 func orderID() (string, error) {
+	seq := orderSeq.Add(1)
+	now := time.Now().UnixNano()
 	var b [16]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return "", err
-	}
+	binary.BigEndian.PutUint64(b[0:8], uint64(now))
+	binary.BigEndian.PutUint64(b[8:16], seq)
 	return "o_" + hex.EncodeToString(b[:]), nil
 }
 

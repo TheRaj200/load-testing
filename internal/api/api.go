@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"math"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -63,6 +65,60 @@ func apiError(w http.ResponseWriter, status int, code string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_, _ = w.Write(body)
+}
+
+func writeProductJSON(w http.ResponseWriter, p model.Product) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	buf := make([]byte, 0, 256)
+	buf = append(buf, `{"id":"`...)
+	buf = append(buf, p.ID...)
+	buf = append(buf, `","name":"`...)
+	buf = append(buf, p.Name...)
+	buf = append(buf, `","category":"`...)
+	buf = append(buf, p.Category...)
+	buf = append(buf, `","price":`...)
+	buf = strconv.AppendInt(buf, p.Price, 10)
+	buf = append(buf, `,"stock":`...)
+	buf = strconv.AppendInt(buf, p.Stock, 10)
+	buf = append(buf, '}', '\n')
+	_, _ = w.Write(buf)
+}
+
+type orderReq struct {
+	UserID    *string `json:"userId"`
+	ProductID *string `json:"productId"`
+}
+
+func parseOrderBody(r *http.Request) (string, string, bool) {
+	var req orderReq
+	dec := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
+	if err := dec.Decode(&req); err != nil {
+		return "", "", false
+	}
+	if req.UserID == nil || req.ProductID == nil {
+		return "", "", false
+	}
+	u, p := *req.UserID, *req.ProductID
+	if !validString(u, 64) || !validString(p, 64) {
+		return "", "", false
+	}
+	return u, p, true
+}
+
+func writeOrderJSON(w http.ResponseWriter, o model.Order) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(201)
+	buf := make([]byte, 0, 128)
+	buf = append(buf, `{"orderId":"`...)
+	buf = append(buf, o.OrderID...)
+	buf = append(buf, `","userId":"`...)
+	buf = append(buf, o.UserID...)
+	buf = append(buf, `","productId":"`...)
+	buf = append(buf, o.ProductID...)
+	buf = append(buf, `"}`...)
+	buf = append(buf, '\n')
+	_, _ = w.Write(buf)
 }
 
 func (a *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -142,7 +198,7 @@ func (a *Server) getProduct(w http.ResponseWriter, r *http.Request, id string) {
 		apiError(w, 500, "INTERNAL_ERROR")
 		return
 	}
-	respond(w, 200, p)
+	writeProductJSON(w, p)
 }
 
 func (a *Server) listProducts(w http.ResponseWriter, r *http.Request) {
@@ -184,14 +240,8 @@ func (a *Server) listProducts(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *Server) createOrder(w http.ResponseWriter, r *http.Request) {
-	fields, err := readObject(r)
-	if err != nil {
-		apiError(w, 400, "VALIDATION_ERROR")
-		return
-	}
-	user, ok1 := stringField(fields, "userId", 64)
-	product, ok2 := stringField(fields, "productId", 64)
-	if !ok1 || !ok2 {
+	user, product, ok := parseOrderBody(r)
+	if !ok {
 		apiError(w, 400, "VALIDATION_ERROR")
 		return
 	}
@@ -209,7 +259,7 @@ func (a *Server) createOrder(w http.ResponseWriter, r *http.Request) {
 		apiError(w, 500, "INTERNAL_ERROR")
 	default:
 		a.cache.DecrementStock(product)
-		respond(w, 201, order)
+		writeOrderJSON(w, order)
 	}
 }
 
