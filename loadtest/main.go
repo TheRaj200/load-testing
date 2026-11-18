@@ -350,10 +350,12 @@ func (x *runner) audit() error {
 func main() {
 	base := flag.String("base", "http://127.0.0.1:8080", "target URL")
 	smoke := flag.Bool("smoke", false, "small local run")
-	maxRate := flag.Int("max-rate", 50000, "highest full-profile rate to run")
+	maxRate := flag.Int("max-rate", 100000, "highest full-profile rate to run")
+	rateFlag := flag.Int("rate", 0, "run only this specific rate (e.g. 50000, 80000, 100000)")
+	startRate := flag.Int("start-rate", 0, "skip levels below this rate")
 	flag.Parse()
 	run := fmt.Sprintf("r%d", time.Now().UnixNano())
-	x := &runner{base: *base, run: run, client: &http.Client{Timeout: 2 * time.Second, Transport: &http.Transport{MaxIdleConns: 5000, MaxIdleConnsPerHost: 5000, IdleConnTimeout: 60 * time.Second}}, accepted: map[string]map[string]bool{}, uncertain: map[string]int64{}, initial: map[string]int64{}, byID: map[string]product{}}
+	x := &runner{base: *base, run: run, client: &http.Client{Timeout: 2 * time.Second, Transport: &http.Transport{MaxIdleConns: 20000, MaxIdleConnsPerHost: 20000, IdleConnTimeout: 60 * time.Second}}, accepted: map[string]map[string]bool{}, uncertain: map[string]int64{}, initial: map[string]int64{}, byID: map[string]product{}}
 	seed := 10000
 	if *smoke {
 		seed = 100
@@ -364,9 +366,22 @@ func main() {
 	}
 	if *smoke {
 		x.level(50, 5*time.Second, product{})
+	} else if *rateFlag > 0 {
+		p := product{fmt.Sprintf("%sflash0", run), "Flash", fmt.Sprintf("%sf0", run), 2999, 100}
+		if e := x.create(p); e != nil {
+			fmt.Fprintln(os.Stderr, e)
+			os.Exit(1)
+		}
+		x.level(*rateFlag, 30*time.Second, p)
 	} else {
-		x.level(200, 60*time.Second, product{})
-		for i, rate := range []int{500, 1000, 1500, 2000, 3000, 4000, 5000, 6500, 8000, 10000, 12500, 15000, 20000, 25000, 30000, 40000, 50000} {
+		if *startRate <= 200 {
+			x.level(200, 60*time.Second, product{})
+		}
+		rates := []int{500, 1000, 1500, 2000, 3000, 4000, 5000, 6500, 8000, 10000, 12500, 15000, 20000, 25000, 30000, 40000, 50000, 60000, 70000, 80000, 90000, 100000}
+		for i, rate := range rates {
+			if rate < *startRate {
+				continue
+			}
 			if rate > *maxRate {
 				break
 			}
