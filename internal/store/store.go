@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"math"
+	"sync"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -22,7 +23,10 @@ var (
 	ErrCommitUnknown = errors.New("order commit outcome unknown")
 )
 
-type Store struct{ db *pgxpool.Pool }
+type Store struct {
+	db      *pgxpool.Pool
+	soldOut sync.Map
+}
 
 func New(db *pgxpool.Pool) *Store               { return &Store{db: db} }
 func (s *Store) Ping(ctx context.Context) error { return s.db.Ping(ctx) }
@@ -95,6 +99,10 @@ func orderID() (string, error) {
 
 func (s *Store) CreateOrder(ctx context.Context, userID, productID string) (model.Order, error) {
 	order := model.Order{UserID: userID, ProductID: productID}
+	if _, ok := s.soldOut.Load(productID); ok {
+		return order, ErrSoldOut
+	}
+
 	var err error
 	order.OrderID, err = orderID()
 	if err != nil {
@@ -132,6 +140,9 @@ func (s *Store) CreateOrder(ctx context.Context, userID, productID string) (mode
 		}
 		if err != nil {
 			return order, err
+		}
+		if stock == 0 {
+			s.soldOut.Store(productID, struct{}{})
 		}
 		return order, ErrSoldOut
 	}

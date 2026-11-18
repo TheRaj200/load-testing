@@ -24,13 +24,45 @@ func New(s *store.Store, c *cache.Products, lists *cache.Lists) *Server {
 	return &Server{store: s, cache: c, lists: lists}
 }
 
+var (
+	errSoldOut          = []byte(`{"error":"SOLD_OUT"}` + "\n")
+	errAlreadyPurchased = []byte(`{"error":"ALREADY_PURCHASED"}` + "\n")
+	errProductNotFound  = []byte(`{"error":"PRODUCT_NOT_FOUND"}` + "\n")
+	errValidationError  = []byte(`{"error":"VALIDATION_ERROR"}` + "\n")
+	errProductExists    = []byte(`{"error":"PRODUCT_EXISTS"}` + "\n")
+	errInternalError    = []byte(`{"error":"INTERNAL_ERROR"}` + "\n")
+	healthOK            = []byte(`{"status":"ok"}` + "\n")
+	healthUnavailable   = []byte(`{"status":"unavailable"}` + "\n")
+)
+
 func respond(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(value)
 }
+
 func apiError(w http.ResponseWriter, status int, code string) {
-	respond(w, status, map[string]string{"error": code})
+	var body []byte
+	switch code {
+	case "SOLD_OUT":
+		body = errSoldOut
+	case "ALREADY_PURCHASED":
+		body = errAlreadyPurchased
+	case "PRODUCT_NOT_FOUND":
+		body = errProductNotFound
+	case "VALIDATION_ERROR":
+		body = errValidationError
+	case "PRODUCT_EXISTS":
+		body = errProductExists
+	case "INTERNAL_ERROR":
+		body = errInternalError
+	default:
+		body, _ = json.Marshal(map[string]string{"error": code})
+		body = append(body, '\n')
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_, _ = w.Write(body)
 }
 
 func (a *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -57,10 +89,14 @@ func (a *Server) health(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), time.Second)
 	defer cancel()
 	if a.store.Ping(ctx) != nil {
-		respond(w, 503, map[string]string{"status": "unavailable"})
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(503)
+		_, _ = w.Write(healthUnavailable)
 		return
 	}
-	respond(w, 200, map[string]string{"status": "ok"})
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, _ = w.Write(healthOK)
 }
 
 func (a *Server) createProduct(w http.ResponseWriter, r *http.Request) {
