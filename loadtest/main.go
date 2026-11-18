@@ -45,6 +45,7 @@ type runner struct {
 	transport atomic.Uint64
 	mu        sync.Mutex
 	accepted  map[string]map[string]bool
+	uncertain map[string]int64
 	initial   map[string]int64
 	products  []product
 	byID      map[string]product
@@ -248,6 +249,13 @@ func (x *runner) one(flash product, seed int64) {
 }
 func (x *runner) checkOrder(r result, p product, user string) {
 	if x.failed(r) {
+		// A timed-out order can still commit after its response is lost. Keep it
+		// in the audit's upper bound; a transport error is not proof of rollback.
+		if r.Err != nil {
+			x.mu.Lock()
+			x.uncertain[p.ID]++
+			x.mu.Unlock()
+		}
 		return
 	}
 	if r.Status == 201 {
@@ -330,10 +338,11 @@ func (x *runner) audit() error {
 			return fmt.Errorf("audit read %s", id)
 		}
 		x.mu.Lock()
-		want := x.initial[id] - int64(len(x.accepted[id]))
+		accepted := int64(len(x.accepted[id]))
+		maxAccepted := accepted + x.uncertain[id]
 		x.mu.Unlock()
-		if p.Stock != want {
-			return fmt.Errorf("audit %s stock=%d want=%d", id, p.Stock, want)
+		if p.Stock > x.initial[id]-accepted || p.Stock < x.initial[id]-maxAccepted {
+			return fmt.Errorf("audit %s stock=%d accepted=%d uncertain=%d", id, p.Stock, accepted, maxAccepted-accepted)
 		}
 	}
 	return nil
@@ -344,7 +353,7 @@ func main() {
 	maxRate := flag.Int("max-rate", 50000, "highest full-profile rate to run")
 	flag.Parse()
 	run := fmt.Sprintf("r%d", time.Now().UnixNano())
-	x := &runner{base: *base, run: run, client: &http.Client{Timeout: 2 * time.Second, Transport: &http.Transport{MaxIdleConns: 5000, MaxIdleConnsPerHost: 5000, IdleConnTimeout: 60 * time.Second}}, accepted: map[string]map[string]bool{}, initial: map[string]int64{}, byID: map[string]product{}}
+	x := &runner{base: *base, run: run, client: &http.Client{Timeout: 2 * time.Second, Transport: &http.Transport{MaxIdleConns: 5000, MaxIdleConnsPerHost: 5000, IdleConnTimeout: 60 * time.Second}}, accepted: map[string]map[string]bool{}, uncertain: map[string]int64{}, initial: map[string]int64{}, byID: map[string]product{}}
 	seed := 10000
 	if *smoke {
 		seed = 100

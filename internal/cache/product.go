@@ -23,7 +23,7 @@ type productFlight struct {
 // Products caches only successful reads. A missing ID is never cached because
 // a concurrent product creation may make it valid immediately.
 type Products struct {
-	mu      sync.Mutex
+	mu      sync.RWMutex
 	entries map[string]productEntry
 	flights map[string]*productFlight
 	max     int
@@ -47,8 +47,26 @@ func (c *Products) Invalidate(id string) {
 	c.mu.Unlock()
 }
 
+func (c *Products) DecrementStock(id string) {
+	c.mu.Lock()
+	if entry, ok := c.entries[id]; ok {
+		if entry.product.Stock > 0 {
+			entry.product.Stock--
+			c.entries[id] = entry
+		}
+	}
+	c.mu.Unlock()
+}
+
 func (c *Products) Get(ctx context.Context, id string, load func(context.Context, string) (model.Product, error)) (model.Product, error) {
 	for {
+		c.mu.RLock()
+		if entry, ok := c.entries[id]; ok && time.Now().Before(entry.expires) {
+			c.mu.RUnlock()
+			return entry.product, nil
+		}
+		c.mu.RUnlock()
+
 		c.mu.Lock()
 		if entry, ok := c.entries[id]; ok && time.Now().Before(entry.expires) {
 			c.mu.Unlock()

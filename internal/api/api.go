@@ -172,7 +172,7 @@ func (a *Server) createOrder(w http.ResponseWriter, r *http.Request) {
 	case err != nil:
 		apiError(w, 500, "INTERNAL_ERROR")
 	default:
-		a.cache.Invalidate(product)
+		a.cache.DecrementStock(product)
 		respond(w, 201, order)
 	}
 }

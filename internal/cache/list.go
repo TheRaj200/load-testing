@@ -26,7 +26,7 @@ type listFlight struct {
 // Lists keeps stock for a fixed short lifetime. CreateProduct clears entries
 // before its 201 response, so category membership and totals do not linger.
 type Lists struct {
-	mu      sync.Mutex
+	mu      sync.RWMutex
 	entries map[listKey]listEntry
 	flights map[listKey]*listFlight
 	max     int
@@ -53,6 +53,13 @@ func (c *Lists) InvalidateCategory(_ string) {
 func (c *Lists) Get(ctx context.Context, category string, page, limit int64, load func(context.Context, string, int64, int64) (model.ProductList, error)) (model.ProductList, error) {
 	key := listKey{category: category, page: page, limit: limit}
 	for {
+		c.mu.RLock()
+		if entry, ok := c.entries[key]; ok && time.Now().Before(entry.expires) {
+			c.mu.RUnlock()
+			return entry.result, nil
+		}
+		c.mu.RUnlock()
+
 		c.mu.Lock()
 		if entry, ok := c.entries[key]; ok && time.Now().Before(entry.expires) {
 			c.mu.Unlock()

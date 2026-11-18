@@ -51,8 +51,8 @@ func Load() Config {
 	if listTTL > 2*time.Second {
 		listTTL = 2 * time.Second
 	}
-	maxConns := positiveInt("DB_MAX_CONNS", 16)
-	minConns := positiveInt("DB_MIN_CONNS", 2)
+	maxConns := positiveInt("DB_MAX_CONNS", 60)
+	minConns := positiveInt("DB_MIN_CONNS", 10)
 	if minConns > maxConns {
 		minConns = maxConns
 	}

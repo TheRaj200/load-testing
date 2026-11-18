@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"math"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -96,54 +95,48 @@ func orderID() (string, error) {
 
 func (s *Store) CreateOrder(ctx context.Context, userID, productID string) (model.Order, error) {
 	order := model.Order{UserID: userID, ProductID: productID}
-	// Stock only decreases and products are never deleted. A committed zero is
-	// therefore a safe rejection from the authoritative database, without a
-	// transaction or a row lock on a heavily contested flash product.
-	var stock int64
-	err := s.db.QueryRow(ctx, `SELECT stock FROM products WHERE id=$1`, productID).Scan(&stock)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return order, ErrProductNotFound
-	}
-	if err != nil {
-		return order, err
-	}
-	if stock == 0 {
-		return order, ErrSoldOut
-	}
-
-	tx, err := s.db.BeginTx(ctx, pgx.TxOptions{})
-	if err != nil {
-		return order, err
-	}
-	defer tx.Rollback(context.Background())
-	// Conditional UPDATE serializes the last-unit race. An INSERT failure
-	// rolls this decrement back with the transaction.
-	err = tx.QueryRow(ctx, `UPDATE products SET stock=stock-1 WHERE id=$1 AND stock>0 RETURNING stock`, productID).Scan(&stock)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return order, ErrSoldOut
-	}
-	if err != nil {
-		return order, err
-	}
+	var err error
 	order.OrderID, err = orderID()
 	if err != nil {
 		return order, err
 	}
-	_, err = tx.Exec(ctx, `INSERT INTO orders(order_id,user_id,product_id) VALUES($1,$2,$3)`, order.OrderID, userID, productID)
-	if err != nil {
-		var pe *pgconn.PgError
-		if errors.As(err, &pe) && pe.Code == "23505" && pe.ConstraintName == "orders_user_id_product_id_key" {
-			return order, ErrAlreadyPurchased
+
+	var insertedID string
+	err = s.db.QueryRow(ctx, `
+		WITH decr AS (
+			UPDATE products
+			SET stock = stock - 1
+			WHERE id = $1 AND stock > 0
+			RETURNING id
+		)
+		INSERT INTO orders(order_id, user_id, product_id)
+		SELECT $2, $3, decr.id
+		FROM decr
+		RETURNING order_id
+	`, productID, order.OrderID, userID).Scan(&insertedID)
+
+	if err == nil {
+		return order, nil
+	}
+
+	var pe *pgconn.PgError
+	if errors.As(err, &pe) && pe.Code == "23505" && pe.ConstraintName == "orders_user_id_product_id_key" {
+		return order, ErrAlreadyPurchased
+	}
+
+	if errors.Is(err, pgx.ErrNoRows) {
+		var stock int64
+		err = s.db.QueryRow(ctx, `SELECT stock FROM products WHERE id=$1`, productID).Scan(&stock)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return order, ErrProductNotFound
 		}
-		return order, err
+		if err != nil {
+			return order, err
+		}
+		return order, ErrSoldOut
 	}
-	// Use a fresh context so a disconnected client cannot cancel a commit halfway.
-	commitCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err = tx.Commit(commitCtx); err != nil {
-		return order, ErrCommitUnknown
-	}
-	return order, nil
+
+	return order, err
 }
 
 func (s *Store) UserOrders(ctx context.Context, userID string) (model.UserOrders, error) {
